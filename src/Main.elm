@@ -2,17 +2,28 @@ module Main exposing (..)
 
 import Html.App as App
 import Html
+import Html.Attributes as A
+import Html.Events exposing (onClick, onInput)
 import Color exposing (rgb, Color)
 import Graphics.Render exposing (..)
 import Random
 import Random.Extra as RE
 import Time exposing (Time)
+import String
+
+
+type alias Canvas =
+    { width : Float, height : Float }
 
 
 type alias Model =
     { shapes : List Shape
-    , seed : Maybe Random.Seed
-    , maxShapes : Int
+    , canvas : Canvas
+    , started : Bool
+    , maxWidth : Float
+    , maxHeight : Float
+    , minSide : Float
+    , maxSide : Float
     }
 
 
@@ -20,7 +31,12 @@ type Msg
     = NoOp
     | GenerateShape Time
     | NewShape Shape
-    | Tick Time
+    | UpdateWidth String
+    | UpdateHeight String
+    | UpdateMinSide String
+    | UpdateMaxSide String
+    | Toggle
+    | Clear
 
 
 type Geometry
@@ -38,19 +54,19 @@ type Colour
 type alias Shape =
     { geometry : Geometry
     , colour : Color.Color
-    , radius : Float
+    , side : Float
     , position : ( Float, Float )
     }
 
 
-generatePosition : Random.Generator ( Float, Float )
-generatePosition =
+generatePosition : Model -> Random.Generator ( Float, Float )
+generatePosition model =
     let
         splitX =
-            canvasSize.width / 2
+            model.canvas.width / 2
 
         splitY =
-            canvasSize.height / 2
+            model.canvas.height / 2
 
         minX =
             0 - splitX
@@ -72,14 +88,14 @@ canvasSize =
     { width = 1280, height = 1024 }
 
 
-generateRadius : Random.Generator Float
-generateRadius =
-    Random.float 20 150
+generateRadius : Model -> Random.Generator Float
+generateRadius model =
+    Random.float model.minSide model.maxSide
 
 
-generateShape : Random.Generator Shape
-generateShape =
-    Random.map4 Shape generateGeometry generateColor generateRadius generatePosition
+generateShape : Model -> Random.Generator Shape
+generateShape model =
+    Random.map4 Shape generateGeometry generateColor (generateRadius model) (generatePosition model)
 
 
 generateGeometry : Random.Generator Geometry
@@ -112,18 +128,80 @@ update msg model =
             model ! []
 
         GenerateShape _ ->
-            model ! [ Random.generate NewShape generateShape ]
+            model ! [ Random.generate NewShape (generateShape model) ]
 
         NewShape shape ->
             { model | shapes = shape :: model.shapes } ! []
 
-        Tick t ->
-            { model | seed = Just (timeToSeed t) } ! []
+        UpdateWidth width ->
+            let
+                w =
+                    min model.maxWidth
+
+                newWidth =
+                    Result.withDefault model.canvas.width (String.toFloat width)
+
+                canvas =
+                    model.canvas
+
+                newCanvas =
+                    { canvas | width = w newWidth }
+            in
+                { model | canvas = newCanvas } ! []
+
+        UpdateHeight height ->
+            let
+                h =
+                    min model.maxHeight
+
+                newHeight =
+                    Result.withDefault
+                        model.canvas.height
+                        (String.toFloat height)
+
+                canvas =
+                    model.canvas
+
+                newCanvas =
+                    { canvas | height = h newHeight }
+            in
+                { model | canvas = newCanvas } ! []
+
+        UpdateMinSide s ->
+            let
+                newMinSide =
+                    Result.withDefault model.minSide (String.toFloat s)
+                        |> max 0
+                        |> min model.maxSide
+            in
+                { model | minSide = newMinSide } ! []
+
+        UpdateMaxSide s ->
+            let
+                newMaxSide =
+                    Result.withDefault model.maxSide (String.toFloat s)
+                        |> min model.canvas.height
+                        |> max model.minSide
+            in
+                { model | maxSide = newMaxSide } ! []
+
+        Toggle ->
+            { model | started = (not model.started) } ! []
+
+        Clear ->
+            { model | shapes = [] } ! []
 
 
 initialModel : Model
 initialModel =
-    { shapes = [], seed = Nothing, maxShapes = 50 }
+    { shapes = []
+    , canvas = { width = 1280, height = 1024 }
+    , started = False
+    , maxHeight = 2140
+    , maxWidth = 3860
+    , minSide = 20
+    , maxSide = 200
+    }
 
 
 init : ( Model, Cmd Msg )
@@ -133,8 +211,8 @@ init =
 
 subscriptions : Model -> Sub Msg
 subscriptions model =
-    if (List.length model.shapes < model.maxShapes) then
-        Time.every Time.second GenerateShape
+    if (model.started) then
+        Time.every (200 * Time.millisecond) GenerateShape
     else
         Sub.none
 
@@ -157,13 +235,13 @@ getColor colour =
 
 drawSquare : Shape -> Form Msg
 drawSquare s =
-    rectangle s.radius s.radius
+    rectangle s.side s.side
         |> solidFill s.colour
 
 
 drawCircle : Shape -> Form Msg
 drawCircle s =
-    circle s.radius
+    circle s.side
         |> solidFill s.colour
 
 
@@ -186,28 +264,63 @@ view : Model -> Html.Html Msg
 view model =
     let
         boundingBox =
-            rectangle canvasSize.width canvasSize.height
+            rectangle model.canvas.width model.canvas.height
                 |> solidFill (rgb 15 15 15)
 
         shapesAsGroup =
             List.map drawShape model.shapes
                 |> group
-
-        mostRecentShape =
-            case List.head model.shapes of
-                Nothing ->
-                    Html.text ""
-
-                Just s ->
-                    Html.text (toString s)
     in
         Html.div []
-            [ group
-                [ boundingBox
-                , shapesAsGroup
+            [ Html.div []
+                [ group
+                    [ boundingBox
+                    , shapesAsGroup
+                    ]
+                    |> svg model.canvas.width
+                        model.canvas.height
                 ]
-                |> svg canvasSize.width canvasSize.height
-            , mostRecentShape
+            , menu model
+            ]
+
+
+formInput : String -> (String -> a) -> String -> Html.Html a
+formInput label msg value =
+    Html.div []
+        [ Html.label [] [ Html.text label ]
+        , Html.input [ onInput msg, A.value value ]
+            []
+        ]
+
+
+menu : Model -> Html.Html Msg
+menu model =
+    let
+        toggleText =
+            if model.started then
+                "Stop"
+            else
+                "Start"
+
+        w =
+            toString model.canvas.width
+
+        h =
+            toString model.canvas.height
+
+        minS =
+            toString model.minSide
+
+        maxS =
+            toString model.maxSide
+    in
+        Html.div []
+            [ Html.button [ onClick Toggle ] [ Html.text toggleText ]
+            , Html.button [ onClick Clear ] [ Html.text "Clear canvas" ]
+            , formInput "Width" UpdateWidth w
+            , formInput "Height" UpdateHeight h
+            , formInput "Minimum Side" UpdateMinSide minS
+            , formInput "Maximum Side" UpdateMaxSide maxS
             ]
 
 
